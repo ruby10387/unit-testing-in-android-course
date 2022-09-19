@@ -5,7 +5,13 @@ import com.techyourchance.unittesting.common.time.TimeProvider;
 import com.techyourchance.unittesting.networking.questions.FetchQuestionDetailsEndpoint;
 import com.techyourchance.unittesting.networking.questions.QuestionSchema;
 
+import java.util.HashMap;
+import java.util.Map;
+
 public class FetchQuestionDetailsUseCase extends BaseObservable<FetchQuestionDetailsUseCase.Listener> {
+
+    private static final long CACHE_TIMEOUT_MS = 60000;
+    private final Map<String, QuestionDetailsCacheEntry> mQuestionDetailsCache = new HashMap<>();
 
     public interface Listener {
         void onQuestionDetailsFetched(QuestionDetails questionDetails);
@@ -22,10 +28,19 @@ public class FetchQuestionDetailsUseCase extends BaseObservable<FetchQuestionDet
     }
 
     public void fetchQuestionDetailsAndNotify(String questionId) {
+        if (serveQuestionDetailsFromCacheIfValid(questionId)) {
+            return;
+        }
+
         mFetchQuestionDetailsEndpoint.fetchQuestionDetails(questionId, new FetchQuestionDetailsEndpoint.Listener() {
             @Override
             public void onQuestionDetailsFetched(QuestionSchema question) {
-                notifySuccess(question);
+                QuestionDetailsCacheEntry cacheEntry = new QuestionDetailsCacheEntry(
+                        schemaToQuestionDetails(question),
+                        mTimeProvider.getCurrentTimestamp()
+                );
+                mQuestionDetailsCache.put(questionId, cacheEntry);
+                notifySuccess(cacheEntry.mQuestionDetails);
 
             }
 
@@ -36,20 +51,47 @@ public class FetchQuestionDetailsUseCase extends BaseObservable<FetchQuestionDet
         });
     }
 
+    private boolean serveQuestionDetailsFromCacheIfValid(String questionId) {
+        final QuestionDetailsCacheEntry cachedQuestionDetailsEntry = mQuestionDetailsCache.get(questionId);
+        if (cachedQuestionDetailsEntry != null
+                && mTimeProvider.getCurrentTimestamp() < cachedQuestionDetailsEntry.mCachedTimestamp + CACHE_TIMEOUT_MS) {
+            notifySuccess(cachedQuestionDetailsEntry.mQuestionDetails);
+            return true;
+        } else {
+            return false;
+        }
+    }
+
+
+    private QuestionDetails schemaToQuestionDetails(QuestionSchema questionSchema) {
+        return new QuestionDetails(
+                questionSchema.getId(),
+                questionSchema.getTitle(),
+                questionSchema.getBody()
+        );
+
+    }
+
     private void notifyFailure() {
         for (Listener listener : getListeners()) {
             listener.onQuestionDetailsFetchFailed();
         }
     }
 
-    private void notifySuccess(QuestionSchema questionSchema) {
+    private void notifySuccess(QuestionDetails questionDetails) {
         for (Listener listener : getListeners()) {
-            listener.onQuestionDetailsFetched(
-                    new QuestionDetails(
-                            questionSchema.getId(),
-                            questionSchema.getTitle(),
-                            questionSchema.getBody()
-                    ));
+            listener.onQuestionDetailsFetched(questionDetails);
         }
     }
+
+    private static class QuestionDetailsCacheEntry {
+        private final QuestionDetails mQuestionDetails;
+        private final long mCachedTimestamp;
+
+        private QuestionDetailsCacheEntry(QuestionDetails questionDetails, long cachedTimestamp) {
+            mQuestionDetails = questionDetails;
+            mCachedTimestamp = cachedTimestamp;
+        }
+    }
+
 }
